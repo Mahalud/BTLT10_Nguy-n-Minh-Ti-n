@@ -1,0 +1,233 @@
+CREATE TABLE HangSX (
+    MaHangSX VARCHAR2(10) PRIMARY KEY,
+    TenHang VARCHAR2(100) NOT NULL,
+    DiaChi VARCHAR2(200),
+    SoDT VARCHAR2(15),
+    Email VARCHAR2(100)
+);
+ 
+CREATE TABLE SanPham (
+    MaSP VARCHAR2(10) PRIMARY KEY,
+    MaHangSX VARCHAR2(10) REFERENCES HangSX(MaHangSX),
+    TenSP VARCHAR2(100) NOT NULL,
+    SoLuong NUMBER(10) DEFAULT 0,
+    MauSac VARCHAR2(50),
+    GiaBan NUMBER(15,2),
+    DonViTinh VARCHAR2(20),
+    MoTa VARCHAR2(300)
+);
+ 
+CREATE TABLE NhanVien (
+    MaNV VARCHAR2(10) PRIMARY KEY,
+    TenNV VARCHAR2(100)   NOT NULL,
+    GioiTinh VARCHAR2(5),
+    DiaChi VARCHAR2(200),
+    SoDT VARCHAR2(15),
+    Email VARCHAR2(100),
+    TenPhong VARCHAR2(50)
+);
+ 
+CREATE TABLE PNhap (
+    SoHDN VARCHAR2(10) PRIMARY KEY,
+    NgayNhap DATE DEFAULT SYSDATE,
+    MaNV VARCHAR2(10) REFERENCES NhanVien(MaNV)
+);
+ 
+CREATE TABLE Nhap (
+    SoHDN VARCHAR2(10) REFERENCES PNhap(SoHDN),
+    MaSP VARCHAR2(10) REFERENCES SanPham(MaSP),
+    SoLuongN NUMBER(10),
+    DonGiaN NUMBER(15,2),
+    CONSTRAINT pk_Nhap PRIMARY KEY (SoHDN, MaSP)
+);
+ 
+CREATE TABLE PXuat (
+    SoHDX VARCHAR2(10)PRIMARY KEY,
+    NgayXuat DATE DEFAULT SYSDATE,
+    MaNV VARCHAR2(10) REFERENCES NhanVien(MaNV)
+);
+ 
+CREATE TABLE Xuat (
+    SoHDX VARCHAR2(10) REFERENCES PXuat(SoHDX),
+    MaSP VARCHAR2(10) REFERENCES SanPham(MaSP),
+    SoLuongX NUMBER(10),
+    CONSTRAINT pk_Xuat PRIMARY KEY (SoHDX, MaSP)
+);
+
+
+CREATE OR REPLACE TRIGGER trg_Nhap
+BEFORE INSERT ON Nhap
+FOR EACH ROW
+DECLARE
+    v_dem NUMBER;
+BEGIN
+    -- kiem tra masp co ton tai khong
+    SELECT COUNT(*) INTO v_dem FROM SanPham WHERE MaSP = :NEW.MaSP;
+    IF v_dem = 0 THEN
+        RAISE_APPLICATION_ERROR(-20001, 'MaSP khong ton tai trong SanPham');
+    END IF;
+    
+    -- kiem tra so luong va don gia phai > 0
+    IF :NEW.SoLuongN <= 0 OR :NEW.DonGiaN <= 0 THEN
+        RAISE_APPLICATION_ERROR(-20002, 'SoLuongN va DonGiaN phai lon hon 0');
+    END IF;
+    
+    -- hop le thi cong them so luong vao sanpham
+    UPDATE SanPham SET SoLuong = SoLuong + :NEW.SoLuongN
+    WHERE MaSP = :NEW.MaSP;
+END;
+/
+
+
+CREATE OR REPLACE TRIGGER trg_Xuat
+BEFORE INSERT ON Xuat
+FOR EACH ROW
+DECLARE
+    v_dem    NUMBER;
+    v_soluong NUMBER;
+BEGIN
+  
+    SELECT COUNT(*) INTO v_dem FROM SanPham WHERE MaSP = :NEW.MaSP;
+    IF v_dem = 0 THEN
+        RAISE_APPLICATION_ERROR(-20003, 'MaSP khong ton tai trong SanPham');
+    END IF;
+    
+    SELECT SoLuong INTO v_soluong FROM SanPham WHERE MaSP = :NEW.MaSP;
+    
+    IF :NEW.SoLuongX > v_soluong THEN
+        RAISE_APPLICATION_ERROR(-20004, 
+            'Khong du hang! Ton kho hien tai: ' || v_soluong);
+    END IF;
+    
+    UPDATE SanPham SET SoLuong = SoLuong - :NEW.SoLuongX
+    WHERE MaSP = :NEW.MaSP;
+END;
+/
+
+
+CREATE OR REPLACE TRIGGER trg_XoaXuat
+AFTER DELETE ON Xuat
+FOR EACH ROW
+BEGIN
+    UPDATE SanPham SET SoLuong = SoLuong + :OLD.SoLuongX
+    WHERE MaSP = :OLD.MaSP;
+END;
+/
+
+--tao package de dem so dong
+CREATE OR REPLACE PACKAGE pkg_state AS
+    g_row_count NUMBER := 0;
+END pkg_state;
+/
+CREATE OR REPLACE TRIGGER trg_CapNhatXuat
+FOR UPDATE ON Xuat
+COMPOUND TRIGGER
+    BEFORE STATEMENT IS
+    BEGIN
+        pkg_state.g_row_count := 0; -- reset truoc moi lenh update
+    END BEFORE STATEMENT;
+    BEFORE EACH ROW IS
+        v_soluong NUMBER;
+        v_chenhlech NUMBER;
+    BEGIN
+        pkg_state.g_row_count := pkg_state.g_row_count + 1;
+        -- chi cho update 1 dong thoi
+        IF pkg_state.g_row_count > 1 THEN
+            RAISE_APPLICATION_ERROR(-20005, 'Chi duoc cap nhat 1 ban ghi mot lan');
+        END IF;
+        
+        -- neu soluongx doi thi kiem ton kho
+        IF :OLD.SoLuongX <> :NEW.SoLuongX THEN
+            SELECT SoLuong INTO v_soluong FROM SanPham WHERE MaSP = :NEW.MaSP;
+            v_chenhlech := :NEW.SoLuongX - :OLD.SoLuongX;
+            
+            IF v_chenhlech > v_soluong THEN
+                RAISE_APPLICATION_ERROR(-20006, 
+                    'Khong du hang de xuat them. Ton kho: ' || v_soluong);
+            END IF;
+            UPDATE SanPham SET SoLuong = SoLuong - v_chenhlech
+            WHERE MaSP = :NEW.MaSP;
+        END IF;
+    END BEFORE EACH ROW;
+END trg_CapNhatXuat;
+/
+
+CREATE OR REPLACE TRIGGER trg_CapNhatNhap
+FOR UPDATE ON Nhap
+COMPOUND TRIGGER
+
+    BEFORE STATEMENT IS
+    BEGIN
+        pkg_state.g_row_count := 0;
+    END BEFORE STATEMENT;
+
+    BEFORE EACH ROW IS
+        v_chenhlech NUMBER;
+    BEGIN
+        pkg_state.g_row_count := pkg_state.g_row_count + 1;
+
+        IF pkg_state.g_row_count > 1 THEN
+            RAISE_APPLICATION_ERROR(-20007, 'Chi duoc cap nhat 1 ban ghi Nhap');
+        END IF;
+
+        IF :OLD.SoLuongN <> :NEW.SoLuongN THEN
+            v_chenhlech := :NEW.SoLuongN - :OLD.SoLuongN;
+            UPDATE SanPham SET SoLuong = SoLuong + v_chenhlech
+            WHERE MaSP = :NEW.MaSP;
+        END IF;
+    END BEFORE EACH ROW;
+
+END trg_CapNhatNhap;
+/
+
+CREATE OR REPLACE TRIGGER trg_XoaNhap
+AFTER DELETE ON Nhap
+FOR EACH ROW
+BEGIN
+    UPDATE SanPham SET SoLuong = SoLuong - :OLD.SoLuongN
+    WHERE MaSP = :OLD.MaSP;
+END;
+/
+SELECT TRIGGER_NAME, STATUS FROM USER_TRIGGERS ORDER BY TRIGGER_NAME;
+
+
+
+
+INSERT INTO PNhap VALUES ('HDN01', SYSDATE, 'NV01');
+INSERT INTO Nhap VALUES ('HDN01', 'SP01', 20, 50000);
+
+
+INSERT INTO PXuat VALUES ('HDX01', SYSDATE, 'NV02');
+INSERT INTO Xuat VALUES ('HDX01', 'SP01', 3);
+
+SELECT * FROM Nhap;
+SELECT * FROM Xuat;
+SELECT MaSP, TenSP, SoLuong FROM SanPham WHERE MaSP = 'SP01';
+
+
+SELECT MaSP, TenSP, SoLuong FROM SanPham WHERE MaSP = 'SP01';
+SELECT * FROM Xuat WHERE SoHDX = 'HDX01';
+
+
+UPDATE Xuat SET SoLuongX = 5 WHERE SoHDX = 'HDX01' AND MaSP = 'SP01';
+SELECT MaSP, TenSP, SoLuong FROM SanPham WHERE MaSP = 'SP01';
+SELECT * FROM Xuat WHERE SoHDX = 'HDX01';
+
+
+-- Test update nhieu dong -> phai bao loi ORA-20005
+UPDATE Xuat SET SoLuongX = SoLuongX + 1;
+
+-- Test vuot ton kho -> phai bao loi ORA-20006
+UPDATE Xuat SET SoLuongX = 9999 WHERE SoHDX = 'HDX01' AND MaSP = 'SP01';
+
+
+UPDATE Nhap SET SoLuongN = 25 WHERE SoHDN = 'HDN01' AND MaSP = 'SP01';
+SELECT MaSP, TenSP, SoLuong FROM SanPham WHERE MaSP = 'SP01';
+-- Phai ra 20 (15 + chenh lech 5)
+
+UPDATE Nhap SET SoLuongN = SoLuongN + 1;
+-- Phai bao loi ORA-20007
+
+DELETE FROM Nhap WHERE SoHDN = 'HDN01' AND MaSP = 'SP01';
+SELECT MaSP, TenSP, SoLuong FROM SanPham WHERE MaSP = 'SP01';
+-- Phai giam xuong (20 - 25 = -5, do xoa phieu nhap)
